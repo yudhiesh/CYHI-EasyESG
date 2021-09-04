@@ -1,11 +1,50 @@
+from bs4 import BeautifulSoup
 import streamlit as st
 import os
 import requests
+import re
+import string
 
 import docx2txt
 from PIL import Image
 from PyPDF2 import PdfFileReader
 import pdfplumber
+
+
+def extract_text_lxml(response_text):
+    data = BeautifulSoup(response_text, features="lxml")
+    text = data.find_all(text=True)
+    return text
+
+
+def process_text(all_text):
+    visible_html = " ".join([display_visible_html_using_re(t) for t in all_text])
+    str_html = " ".join(visible_html.split())
+    pattern1 = 'xml version="1.0"'
+    pattern2 = 'encoding="UTF-8"?'
+    pattern3 = "GROBID - A machine learning software for extracting information from scholarly documents"
+    str_html = (
+        str_html.replace(pattern1, "").replace(pattern2, "").replace(pattern3, "")
+    )
+    str_html = re.sub(r"((http|https):(\S+))", "", str_html)
+    str_html = re.sub(r"(RT\s(@\w+))", "", str_html)
+    str_html = re.sub(r"[!#?:*%$]", "", str_html)
+    str_html = re.sub(r"[^\s\w+]", "", str_html)
+    str_html = re.sub(r"[\n]", "", str_html)
+    str_html = re.sub(r"[A-Z]+(?![a-z])", "", str_html)
+    str_html = remove_punct(str_html)
+    str_html = " ".join(str_html.split())
+    return str_html
+
+
+def remove_punct(text):
+    text = "".join([char for char in text if char not in string.punctuation])
+    text = re.sub("[0-9]+", "", text)
+    return text
+
+
+def display_visible_html_using_re(text):
+    return re.sub("(\<.*?\>)", "", text)
 
 
 def read_tei(tei_file):
@@ -70,7 +109,6 @@ def main():
                 elif docx_file.type == "application/pdf":
                     # raw_text = read_pdf(docx_file)
                     # st.write(raw_text)
-                    print(dir(docx_file))
                     with st.spinner("Processing..."):
                         try:
                             pdf_path = os.path.abspath(docx_file.name)
@@ -81,8 +119,17 @@ def main():
                                 GROBID_URL,
                                 files={"input": open(pdf_path, "rb")},
                             )
+
                             if response.status_code == 200:
                                 st.success("File process successful")
+                                response_text = response.text
+                                all_text = extract_text_lxml(
+                                    response_text=response_text
+                                )
+                                str_html = process_text(all_text=all_text)
+                                print(str_html)
+                                st.text(str_html)
+
                             else:
                                 st.error("Error processing file!")
 
