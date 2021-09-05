@@ -11,22 +11,37 @@ def extract_text_lxml(response_text):
 
 def process_text(all_text):
     visible_html = " ".join([display_visible_html_using_re(t) for t in all_text])
+
     str_html = " ".join(visible_html.split())
     pattern1 = 'xml version="1.0"'
     pattern2 = 'encoding="UTF-8"?'
     pattern3 = "GROBID - A machine learning software for extracting information from scholarly documents"
+    # Replace some patterns
     str_html = (
-        str_html.replace(pattern1, "").replace(pattern2, "").replace(pattern3, "")
+        str_html.replace(pattern1, "")
+        .replace(pattern2, "")
+        .replace(pattern3, "")
+        .replace("APPENDIX", "")
     )
-    str_html = re.sub(r"((http|https):(\S+))", "", str_html)
-    str_html = re.sub(r"(RT\s(@\w+))", "", str_html)
-    str_html = re.sub(r"[!#?:*%$]", "", str_html)
-    str_html = re.sub(r"[^\s\w+]", "", str_html)
-    str_html = re.sub(r"[\n]", "", str_html)
-    str_html = re.sub(r"[A-Z]+(?![a-z])", "", str_html)
-    str_html = remove_punct(str_html)
-    str_html = " ".join(str_html.split())
-    return str_html
+    # Split the string into sentences
+    sentences = str_html.split(".")
+    # Remove http/https links
+    sentences = [
+        re.sub(r"((http|https):(\S+))", "", sentence) for sentence in sentences
+    ]
+    # Remove new lines
+    sentences = [
+        re.sub(r"\n|\r', '', '\nx\n\r\n", "", sentence) for sentence in sentences
+    ]
+    # Remove punctuations
+    sentences = [remove_punct(sentence) for sentence in sentences]
+    # Remove extra whitespace
+    sentences = [" ".join(sentence.split()) for sentence in sentences]
+    # Remove " " and short sentences
+    sentences = [sentence for sentence in sentences if sentence or len(sentence) > 1]
+    # Not sure what this does but it works
+    sentences = [re.sub(r"[^\s\w+]", "", sentence) for sentence in sentences]
+    return " ".join(sentences)
 
 
 def remove_punct(text):

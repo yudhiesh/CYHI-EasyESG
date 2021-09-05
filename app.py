@@ -1,12 +1,32 @@
 import streamlit as st
 import os
-import requests
 
-import docx2txt
 from PIL import Image
 from PyPDF2 import PdfFileReader
 import pdfplumber
-from preprocess import extract_text_lxml, process_text
+from haystack.preprocessor import PreProcessor
+from haystack.file_converter import PDFToTextConverter
+from haystack.document_store.elasticsearch import ElasticsearchDocumentStore
+from haystack.retriever.sparse import ElasticsearchRetriever
+from haystack.reader import TransformersReader
+from haystack.pipeline import ExtractiveQAPipeline
+from annotated_text import annotated_text
+
+
+def annotate_answer(answers, question):
+    st.write("Question: ", question)
+    for answer in answers:
+        answer_str = answer.get("answer")
+        context = answer.get("context")
+        if context:
+            start_idx = context.find(answer_str)
+            end_idx = start_idx + len(answer_str)
+            # calculate dynamic height depending on context length
+            annotated_text(
+                context[:start_idx],
+                (answer_str, "ANSWER", "#8ef"),
+                context[end_idx:],
+            )
 
 
 def read_pdf(file):
@@ -32,74 +52,50 @@ def load_image(image_file):
     return img
 
 
-def main():
-    st.title("EasyESG")
-
-    menu = ["PDF"]
-    choice = st.sidebar.selectbox("Menu", menu)
-    if choice == "PDF":
-        st.subheader("PDF")
-        docx_file = st.file_uploader("Upload File", type=["txt", "docx", "pdf"])
-        if st.button("Process"):
-            if docx_file:
-                file_details = {
-                    "Filename": docx_file.name,
-                    "FileType": docx_file.type,
-                    "FileSize": f"{round(docx_file.size / 1e6,2)}Mb",
-                }
-                st.write(file_details)
-                # Check File Type
-                if docx_file.type == "text/plain":
-                    # raw_text = docx_file.read() # read as bytes
-                    # st.write(raw_text)
-                    # st.text(raw_text) # fails
-                    st.text(str(docx_file.read(), "utf-8"))  # empty
-                    raw_text = str(
-                        docx_file.read(), "utf-8"
-                    )  # works with st.text and st.write,used for futher processing
-                    # st.text(raw_text) # Works
-                    st.write(raw_text)  # works
-                elif docx_file.type == "application/pdf":
-                    # raw_text = read_pdf(docx_file)
-                    # st.write(raw_text)
-                    with st.spinner("Processing..."):
-                        try:
-                            pdf_path = os.path.abspath(docx_file.name)
-                            GROBID_URL = (
-                                "http://localhost:8070/api/processFulltextDocument"
-                            )
-                            response = requests.post(
-                                GROBID_URL,
-                                files={"input": open(pdf_path, "rb")},
-                            )
-
-                            if response.status_code == 200:
-                                st.success("File process successful")
-                                response_text = response.text
-                                all_text = extract_text_lxml(
-                                    response_text=response_text
-                                )
-                                str_html = process_text(all_text=all_text)
-                                print(str_html)
-                                st.text(str_html)
-
-                            else:
-                                st.error("Error processing file!")
-
-                        except Exception as e:
-                            print(f"{e!r}")
-                            st.error("Error processing file!")
-
-                elif (
-                    docx_file.type
-                    == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                ):
-                    # Use the right file processor ( Docx,Docx2Text,etc)
-                    raw_text = docx2txt.process(
-                        docx_file
-                    )  # Parse in the uploadFile Class directory
-                    st.write(raw_text)
-
-
-if __name__ == "__main__":
-    main()
+st.title("EasyESG")
+st.subheader("PDF")
+docx_file = st.file_uploader("Upload File", type=["txt", "docx", "pdf"])
+if docx_file:
+    file_details = {
+        "Filename": docx_file.name,
+        "FileType": docx_file.type,
+        "FileSize": f"{round(docx_file.size / 1e6,2)}Mb",
+    }
+    st.write(file_details)
+    # Check File Type
+    pdf_path = os.path.abspath(docx_file.name)
+    converter = PDFToTextConverter(remove_numeric_tables=True, valid_languages=["en"])
+    doc = converter.convert(file_path=pdf_path, meta=None)
+    processor = PreProcessor(
+        clean_empty_lines=True,
+        clean_whitespace=True,
+        clean_header_footer=True,
+        split_length=100,
+        split_respect_sentence_boundary=True,
+        split_overlap=0,
+    )
+    docs = processor.process(doc)
+    document_store = ElasticsearchDocumentStore(
+        host="localhost",
+        username="",
+        password="",
+        index="document",
+    )
+    document_store.write_documents(docs)
+    retriever = ElasticsearchRetriever(document_store=document_store)
+    reader = TransformersReader(
+        model_name_or_path="distilbert-base-uncased-distilled-squad",
+        tokenizer="distilbert-base-uncased",
+        use_gpu=-1,
+    )
+    pipe = ExtractiveQAPipeline(reader, retriever)
+    question = st.text_input("Please provide your query:", value="")
+    run_query = st.button("Run")
+    if run_query and question:
+        result = pipe.run(
+            query=question,
+            top_k_retriever=10,
+            top_k_reader=5,
+        )
+        if result["answers"]:
+            annotate_answer(result["answers"], question)
